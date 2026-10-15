@@ -70,7 +70,7 @@ enum MarkdownASTStyler {
             config: configuration,
             extensionsByID: configuration.extensionsByID,
             wikiLinkID: wikiLinkIDProvider,
-            scopedRanges: scopedRanges,
+            scopeIndex: scopedRanges.map(ScopeIndex.init),
             orderedDisplayNumbers: computeOrderedDisplayNumbers(blocks: blocks, ns: ns)
         )
         var attrs: [StyledRange] = []
@@ -629,7 +629,10 @@ enum MarkdownASTStyler {
         let config: MarkdownEditorConfiguration
         let extensionsByID: [String: any MarkdownExtension]
         let wikiLinkID: (NSRange) -> String?
-        let scopedRanges: [NSRange]?
+        /// This pass's restyle scope: nil = the whole document. Carries the
+        /// raw candidate list (regex passes) plus the stabbing index (block
+        /// filter) as one value.
+        let scopeIndex: ScopeIndex?
         let orderedDisplayNumbers: [Int: Int]
 
         /// True when a non-empty selection overlaps `range` — the selection
@@ -651,11 +654,68 @@ enum MarkdownASTStyler {
         var fullRange: NSRange { NSRange(location: 0, length: ns.length) }
         /// Whether a range falls in the styled region (nil scope = whole doc).
         func inScope(_ r: NSRange) -> Bool {
-            guard let scopedRanges else { return true }
-            return scopedRanges.contains { NSIntersectionRange($0, r).length > 0 }
+            guard let scopeIndex else { return true }
+            return scopeIndex.intersects(r)
         }
         /// Ranges the regex/text passes scan (edited paragraphs, or whole doc).
-        var scanRanges: [NSRange] { scopedRanges ?? [fullRange] }
+        var scanRanges: [NSRange] { scopeIndex?.candidates ?? [fullRange] }
+    }
+
+    /// Interval-stabbing index over the restyle's scoped ranges: starts sorted
+    /// ascending plus a running max-end, so an overlap query is one binary
+    /// search instead of a linear scan of the candidates. Without it every
+    /// block paid an O(#candidates) scan in the two `inScope` loops, and a
+    /// 10k-paragraph paste (≈20k blocks × 20k candidates) spent ~35 s there.
+    struct ScopeIndex {
+        /// The candidates exactly as handed in — the regex passes scan this
+        /// list and downstream attribute-winner ordering follows emission
+        /// order, so it is neither reordered nor filtered.
+        let candidates: [NSRange]
+        private let starts: [Int]
+        private let maxEndUpTo: [Int]
+
+        /// A range the index can reason about: real location, non-empty.
+        /// Applied to both the indexed candidates and the query, matching the
+        /// naive `NSIntersectionRange($0, r).length > 0` definition.
+        private static func isWellFormed(_ range: NSRange) -> Bool {
+            range.location != NSNotFound && range.length > 0
+        }
+
+        init(_ ranges: [NSRange]) {
+            candidates = ranges
+            let sorted = ranges
+                .filter(Self.isWellFormed)
+                .sorted {
+                    $0.location == $1.location ? $0.length < $1.length : $0.location < $1.location
+                }
+            starts = sorted.map(\.location)
+            var running: [Int] = []
+            running.reserveCapacity(sorted.count)
+            var best = Int.min
+            for range in sorted {
+                best = max(best, NSMaxRange(range))
+                running.append(best)
+            }
+            maxEndUpTo = running
+        }
+
+        /// True when any indexed range intersects `range` with a non-empty overlap.
+        func intersects(_ range: NSRange) -> Bool {
+            guard !starts.isEmpty, Self.isWellFormed(range) else { return false }
+            let end = range.location.addingReportingOverflow(range.length)
+            let rangeEnd = end.overflow ? Int.max : end.partialValue
+            // Rightmost interval whose start lies strictly before the query's end.
+            // Hand-rolled rather than `partitioningIndex(where:)`: that needs
+            // macOS 15 and this package deploys to 14.
+            var lo = starts.startIndex
+            var hi = starts.endIndex
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if starts[mid] < rangeEnd { lo = mid + 1 } else { hi = mid }
+            }
+            guard lo > starts.startIndex else { return false }
+            return maxEndUpTo[lo - 1] > range.location
+        }
     }
 
     // MARK: - Blocks

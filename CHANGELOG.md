@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Paragraph-scoped restyles answered each block's "am I in scope?" with a linear scan of the unsorted candidates, so a 10k-paragraph paste (≈20k blocks × 20k candidates) spent ~35 s (Debug) inside the styler while producing zero styled ranges for plain text. The check now runs through `MarkdownASTStyler.ScopeIndex`, a sorted interval-stabbing index (one binary search per block), with its semantics pinned to the naive scan by `PasteScopeIndexTests`. Local vendor patch — see `VENDOR-NOTES.md`.
+
 ## [0.14.0] - 2026-10-04
 
 ### Added

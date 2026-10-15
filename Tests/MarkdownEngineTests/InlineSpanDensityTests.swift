@@ -50,20 +50,22 @@ import Testing
 /// DO hold everywhere, and they stay on by default.
 private let perfGateEnabled = ProcessInfo.processInfo.environment["MDE_PERF"] != nil
 
+/// Deterministic LCG — the corpus must be identical across builds for the
+/// fingerprint to mean anything, and `SystemRandomNumberGenerator` isn't.
+/// Shared with other suites that need reproducible randomness (paste scope
+/// index tests) rather than duplicated.
+struct LCG {
+    var state: UInt64 = 0x2545F4914F6CDD1D
+    mutating func next(_ bound: Int) -> Int {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Int((state >> 33) % UInt64(bound))
+    }
+}
+
 @Suite("Inline parse cost vs. span density")
 struct InlineSpanDensityTests {
 
     // MARK: - Corpus
-
-    /// Deterministic LCG — the corpus must be identical across builds for the
-    /// fingerprint to mean anything, and `SystemRandomNumberGenerator` isn't.
-    private struct LCG {
-        var state: UInt64 = 0x2545F4914F6CDD1D
-        mutating func next(_ bound: Int) -> Int {
-            state = state &* 6364136223846793005 &+ 1442695040888963407
-            return Int((state >> 33) % UInt64(bound))
-        }
-    }
 
     /// Fragments chosen to collide: bare and paired delimiters, escapes, and
     /// the openers of every claimed-span construct, so the corpus is dense in
